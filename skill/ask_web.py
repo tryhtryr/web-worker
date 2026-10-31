@@ -174,7 +174,11 @@ def one_round(spec_text, task, out_dir, do_pytest, timeout, label="", pytest_cwd
     files = split_files(reply)
     if not files:
         head = reply.strip().splitlines()[:3]
-        return False, f"{label}未解析到文件标记，返回开头: {' / '.join(head)[:200]}"
+        msg = f"{label}未解析到文件标记，返回开头: {' / '.join(head)[:200]}"
+        if finish == "length":
+            msg += ("\n⚠ 同时检测到**截断**（finish_reason=length，{0} 字符）\n"
+                    "   → 任务太大，务必拆小后重派").format(len(reply))
+        return False, msg
 
     written = write_files(files, out_dir)
     desc = ", ".join(f"{n}({ln}行)" for n, ln in written)

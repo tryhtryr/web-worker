@@ -349,3 +349,68 @@ def extract_sse_text(body):
         continue
 
     return "".join(f["content"] for f in frags if f.get("type") == "RESPONSE").strip()
+
+
+def extract_sse_meta(body):
+    """从 SSE 里提取状态元信息（是否被截断、token 用量、是否思考）。
+
+    返回 {"status": str, "incomplete": bool, "tokens": int, "thinking": bool}
+    """
+    if not body:
+        return {"status": "", "incomplete": False, "tokens": 0, "thinking": False}
+    import json as _json
+
+    status = ""
+    incomplete = False
+    tokens = 0
+    thinking = False
+
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = _json.loads(payload)
+        except Exception:
+            continue
+
+        v = obj.get("v")
+        p = obj.get("p") or ""
+
+        # 初始快照里的 thinking_enabled / incomplete_message
+        if isinstance(v, dict) and "response" in v:
+            resp = v.get("response") or {}
+            if resp.get("thinking_enabled"):
+                thinking = True
+            if resp.get("incomplete_message"):
+                incomplete = True
+            continue
+
+        # response/status SET xxx
+        if p == "response/status" and isinstance(v, str):
+            status = v
+            if v.upper() not in ("FINISHED",):
+                incomplete = True
+            continue
+
+        # quasi_status / accumulated_token_usage
+        if p == "response" and isinstance(v, list):
+            for item in v:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("p") == "quasi_status":
+                    q = str(item.get("v") or "")
+                    if q and q.upper() not in ("FINISHED",):
+                        incomplete = True
+                elif item.get("p") == "accumulated_token_usage":
+                    try:
+                        tokens = int(item.get("v") or 0)
+                    except Exception:
+                        pass
+            continue
+
+    return {"status": status, "incomplete": incomplete,
+            "tokens": tokens, "thinking": thinking}

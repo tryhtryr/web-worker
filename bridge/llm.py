@@ -93,6 +93,10 @@ def split_prose(text):
 
 # ---------------------------------------------------------------- 对话
 
+# 最近一次调用的元信息（截断/思考/token），供 bridge 读取
+last_meta = {}
+
+
 def ask(cdp, text, timeout=300, on_update=None):
     """发一句话给网页版，返回回复文本。
 
@@ -119,6 +123,9 @@ def ask(cdp, text, timeout=300, on_update=None):
         body = ds.capture_reply(cdp, url_hint="/api/v0/chat/completion",
                                 first_wait=60, total_wait=timeout)
         if body:
+            meta = ds.extract_sse_meta(body)
+            last_meta.clear()
+            last_meta.update(meta)
             txt = ds.extract_sse_text(body)
             if txt:
                 if on_update:

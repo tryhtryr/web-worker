@@ -191,6 +191,54 @@ return "".join(f["content"] for f in frags if f["type"] == "RESPONSE")
 
 ---
 
+## 四之二、输出上限与截断检测
+
+### 网页版的单轮上限
+
+实测单次回复上限约 **4K~8K token**（400~800 行代码）。超过会**静默截断** ——
+响应看起来正常结束，但内容只写了一半。
+
+### SSE 里的状态字段
+
+```json
+{"p":"response","o":"BATCH","v":[
+    {"p":"accumulated_token_usage","v":4820},
+    {"p":"quasi_status","v":"FINISHED"}]}
+
+{"p":"response/status","o":"SET","v":"FINISHED"}
+```
+
+正常情况下 `status` 是 `FINISHED`；初始快照里还有 `incomplete_message` 字段。
+
+`extract_sse_meta()` 会解析这些字段：
+
+```python
+{"status": "FINISHED", "incomplete": False, "tokens": 4820, "thinking": False}
+```
+
+### 映射成 OpenAI 标准信号
+
+截断时桥接返回 **`finish_reason: "length"`**（OpenAI 的标准约定）：
+
+```python
+"finish_reason": ("length" if meta.get("incomplete")
+                  else ("tool_calls" if tool_calls else "stop"))
+```
+
+`ask_web.py` 检测到这个值就会警告调用方拆小任务。
+
+### 深度思考的处理
+
+开启"深度思考"时，SSE 的 `fragments` 会有两种 type：
+
+```json
+{"id":2,"type":"THINK","content":"我们需要"}      // 思考
+{"id":3,"type":"RESPONSE","content":"9"}          // 答案
+```
+
+解析器**只取 RESPONSE**，思考内容直接丢弃。
+`thinking_enabled` 字段可以判断本次是否开了思考（用于分析延迟原因）。
+
 ## 五、工具调用转换
 
 ### OpenAI tools → 提示词

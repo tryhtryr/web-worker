@@ -29,6 +29,7 @@ _lock = threading.Lock()
 _browser = None
 _cdp = None
 _session_key = None      # 当前网页会话对应的"身份"，变了就开新对话
+_last_meta = {}          # 最近一次回复的元信息（截断/思考/token）
 
 
 # ---------------------------------------------------------------- 浏览器
@@ -373,7 +374,8 @@ class Handler(BaseHTTPRequestHandler):
                 "id": cid, "object": "chat.completion", "created": created,
                 "model": req.get("model") or MODEL_ID,
                 "choices": [{"index": 0, "message": msg,
-                             "finish_reason": "tool_calls" if tool_calls else "stop"}],
+                             "finish_reason": ("length" if _last_meta.get("incomplete")
+                                               else ("tool_calls" if tool_calls else "stop"))}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             })
 
@@ -457,7 +459,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 prompt = content or ""
 
-        return agent_mod.ask(cdp, prompt, timeout=300)
+        global _last_meta
+        reply = agent_mod.ask(cdp, prompt, timeout=300)
+        _last_meta = dict(getattr(agent_mod, "last_meta", {}) or {})
+        return reply
 
 
 def main():

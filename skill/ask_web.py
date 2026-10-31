@@ -80,7 +80,8 @@ def ask(prompt, system=None, timeout=900):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         obj = json.load(r)
     ch = (obj.get("choices") or [{}])[0]
-    return (ch.get("message") or {}).get("content") or ""
+    text = (ch.get("message") or {}).get("content") or ""
+    return text, ch.get("finish_reason") or "stop"
 
 
 # ---------------------------------------------------------------- 拆分与落盘
@@ -165,7 +166,7 @@ def build_prompt(spec_text, task):
 def one_round(spec_text, task, out_dir, do_pytest, timeout, label="", pytest_cwd=None):
     prompt = build_prompt(spec_text, task)
     t0 = time.time()
-    reply = ask(prompt, timeout=timeout)
+    reply, finish = ask(prompt, timeout=timeout)
     dt = time.time() - t0
     if not reply.strip():
         return False, f"{label}网页版返回空内容（检查浏览器是否登录）"
@@ -178,6 +179,9 @@ def one_round(spec_text, task, out_dir, do_pytest, timeout, label="", pytest_cwd
     written = write_files(files, out_dir)
     desc = ", ".join(f"{n}({ln}行)" for n, ln in written)
     msg = f"{label}{len(written)} 个文件, {sum(l for _, l in written)} 行, {dt:.0f}s → {desc}"
+    if finish == "length":
+        msg += ("\n⚠ 回复被网页版**截断**（达到单轮输出上限）\n"
+                "   → 文件可能不完整，请把这个任务拆小（每个文件 <400 行 / 每次只派 1~2 个文件）后重派")
 
     if do_pytest:
         root = pytest_cwd or detect_project_root(written, out_dir)
@@ -256,7 +260,7 @@ def main():
         return 1
 
     try:
-        reply = ask(prompt, args.system, args.timeout)
+        reply, _finish = ask(prompt, args.system, args.timeout)
     except Exception as e:
         print(f"错误：{e}", file=sys.stderr)
         return 1

@@ -1,0 +1,86 @@
+name: Bug report
+description: 报告一个问题 / Report a bug
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量填完整，尤其是**环境信息**和**完整日志** —— 这个项目的故障几乎都和环境有关。
+
+        Thanks for reporting. The environment fields and the **full log** matter a lot here.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 问题描述 / What happened
+      description: 发生了什么？你期望的结果是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 启动桥接: python bridge.py
+        2. 执行: python skill/ask_web.py --spec spec.md --task "..." --out-dir out --pytest
+        3. 看到错误: ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 出问题的组件 / Component
+      options:
+        - bridge（启动、连接、API 请求）
+        - skill（ask_web.py 派活）
+        - DSH 集成
+        - 文档 / 说明不清
+        - 其它
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统 / OS
+      placeholder: Windows 11 26200 / macOS 14.5 / Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本 / Python version
+      placeholder: "3.12.14"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器及版本 / Browser
+      placeholder: Edge 156.0.3435.50
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 完整日志 / Full log
+      description: 请贴**完整终端输出**（文字，不要截图）
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认 / Checklist
+      options:
+        - label: 浏览器里已登录 DeepSeek，且手动发一句话能正常回复
+          required: true
+        - label: 已搜索现有 issue，没有重复
+          required: false

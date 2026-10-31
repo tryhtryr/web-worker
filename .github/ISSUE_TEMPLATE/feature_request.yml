@@ -1,0 +1,49 @@
+name: Feature request
+description: 提一个功能建议 / Suggest a feature
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题 / Problem
+      description: 描述你遇到的场景，而不是直接给方案
+      placeholder: |
+        我每次派活都要手写 spec 文件，很麻烦……
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望的方案 / Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案 / Alternatives
+      description: 可选。没有就写"无"。
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围 / Scope
+      options:
+        - bridge（协议、浏览器控制）
+        - skill（派活流程）
+        - 文档
+        - 新增集成（其它 Agent 框架、其它模型）
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认 / Checklist
+      options:
+        - label: 已搜索现有 issue，没有重复
+          required: false
+        - label: 这个功能不依赖绕过 DeepSeek 的付费限制（本项目仅供学习）
+          required: false

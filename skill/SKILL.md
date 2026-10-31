@@ -1,0 +1,221 @@
+---
+name: web-worker
+display_name: 网页版干活（省 API token）
+display_name_en: Delegate bulk work to DeepSeek Web
+description: 把大批量生成任务派给免费的 DeepSeek 网页版执行。适用条件是"产出量 ≫ 说明量"（数千行代码、批量同构样板、批量测试/文档，且能自动验收）。规格从磁盘读、产物自动落盘，两者都不进入你的上下文。触发词：网页版干活、省token、派给web、web worker、让网页版写、批量生成。
+description_zh: 把大批量生成任务派给免费的 DeepSeek 网页版；规格从磁盘读、产物自动落盘，只回一行摘要，从而真正省下 API token。
+description_en: Delegate bulk generation to the free DeepSeek web chat. Specs are read from disk and outputs written to disk, so neither enters the caller's context.
+allowed-tools: Bash, Read, Write, Edit
+version: 2.0.0
+slug: web-worker
+tags: [token节约, 网页版, 委派, 批量生成, deepseek]
+---
+
+# 网页版干活（v2）
+
+把**大批量生成**派给免费的 DeepSeek 网页版；昂贵的 API 只做拆解和验收。
+
+---
+
+## ⚠️ 先看实测数据（v1 曾经失败）
+
+用同一个项目（5 文件 700 行）做过 A/B 对比：
+
+| 指标 | A 自己写 | B 派活（v1 写法） | 变化 |
+|---|---|---|---|
+| 输出 token | 15,969 | 9,984 | −37.5% |
+| 输入 token | 4,221 | 5,472 | **+29.6%** |
+| 缓存读取 | 425,472 | 674,048 | **+58.4%** |
+| 加权成本 | 1.00× | **1.24×** | **反而更贵** |
+| 墙钟耗时 | 52 s | 339 s | +552% |
+
+**失败原因**：v1 要求把规格**写进提示词**（430 行），规格从此常驻上下文，
+之后每一步都要重读它 → 省下的 6k 输出 token 全被 250k 缓存读取吃掉了。
+
+**v2 的修法**：规格从磁盘读、产物写回磁盘，**两者都不进上下文**，只回一行摘要。
+
+---
+
+## 什么时候用（硬门槛）
+
+**产出量 ≥ 说明量的 5 倍** 才值得派活。
+
+✅ 适合
+- 一次生成 **2000+ 行**代码 / 大量同构样板
+- 一次生成 **5 个以上文件**
+- 批量测试用例、批量文档
+- 有**自动验收手段**（pytest / 编译 / lint）
+
+❌ 不适合
+- 500~700 行以内的小项目（实测不划算）
+- 需要精确逻辑、边界处理（返工比省的多）
+- 要 1 分钟内出结果
+- 没有自动验收（你就得读全文，等于白干）
+
+---
+
+## 前提
+
+```bash
+# 桥接服务
+curl -s http://127.0.0.1:8787/health     # 应返回 {"ok":true}
+C:\fw\DSH-启动桥接.bat                    # 没运行就启动
+```
+
+Edge 需已登录 DeepSeek（登录态在 `%USERPROFILE%\.eagent_profile`）。
+
+---
+
+## 标准用法（一条命令搞定）
+
+```bash
+python D:\web-worker\ask_web.py \
+  --spec C:\path\spec.md \
+  --task "实现 models.py 和 test_models.py" \
+  --out-dir C:\path\out \
+  --pytest
+```
+
+脚本会：
+1. 从磁盘读 `--spec`（**内容不进你的上下文**）
+2. 拼上 `--task`（20~50 字）+ 输出协议
+3. 调桥接 → 网页版生成
+4. 按 `<<<FILE:xxx>>>` 标记拆分，写到 `--out-dir`
+5. 在 out-dir 跑 `pytest`（只取最后一行摘要）
+6. **只打印一行结果**，例如：
+
+```
+[1/3] 2 个文件, 205 行, 47s → models.py(120行), test_models.py(85行)
+[pytest] 12 passed in 0.31s
+```
+
+**你看到的就这么多** —— 规格和产物都没进上下文。
+
+### 批量派活
+
+```bash
+# tasks.txt 每行一个任务
+python ask_web.py --spec spec.md --task-file tasks.txt --out-dir out --pytest
+```
+
+```
+[1/3] 2 个文件, 205 行, 47s → ...
+[pytest] 12 passed
+[2/3] 2 个文件, 180 行, 39s → ...
+[pytest] 18 passed
+[3/3] 3 个文件, 260 行, 58s → ...
+[pytest] 8 passed
+```
+
+---
+
+### pytest 工作目录（自动探测）
+
+模型输出的路径可能带项目根（如 `taskman/taskman/models.py`），
+直接在最外层跑 pytest 会因为 import 失败而报错。
+
+脚本会自动推断：
+
+| 产物结构 | 探测结果 |
+|---|---|
+| 全部在 `taskman/` 下 | `<out-dir>/taskman` |
+| 文件直接在根下 | `<out-dir>` |
+| 分散在多个顶层目录 | `<out-dir>` |
+
+想手动指定就用 `--pytest-cwd <目录>`。
+
+实际输出会多一行，方便确认：
+```
+[1/4] 2 个文件, 306 行, 141s → ...
+[pytest cwd] taskman
+[pytest] 117 passed in 0.54s
+```
+
+## 关键原则
+
+### 1. 规格必须在磁盘上，不要写进提示词
+
+```bash
+# ❌ 错：把 400 行规格写进提示词
+write task.md  （400 行规格 + 要求）
+
+# ✅ 对：规格早已在磁盘，只用 20 字指路
+ask_web.py --spec spec.md --task "实现 models.py"
+```
+
+**规格文件本身**该由用户提供或复用现成的（如 `project_spec.md`），
+不要每次派活都重写一份。
+
+### 2. `--task` 越短越好
+
+好的 task（20~50 字）：
+```
+实现 models.py 和 test_models.py，注意 Task.validate 的边界
+```
+
+坏的 task（200+ 字）：
+```
+请你实现 models.py，里面要有一个 Task 数据类，字段有 id、title、
+status、priority、tags、created、done_at，validate 方法要检查……
+```
+→ 这些细节应该在 **spec 文件**里，不在 task 里。
+
+### 3. 验收用工具，不要用眼睛
+
+```bash
+--pytest            # 脚本内跑，只回摘要
+```
+
+需要更多检查时，用一行命令：
+```bash
+python -m py_compile out/*.py && echo OK
+```
+**不要** `read` 生成的文件来"看看对不对" —— 那等于把产物拉进上下文，白干。
+
+### 4. 出问题只读局部
+
+```bash
+# ✅ 只读报错那一小段
+python -m pytest out -q --tb=line 2>&1 | tail -3
+```
+
+---
+
+## 常见坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `未解析到文件标记` | 模型没按协议输出 | 在 task 里重申"只输出 `<<<FILE:...>>>` 格式" |
+| `返回空内容` | 浏览器没登录 / 被限流 | 去浏览器登录一次；隔几分钟再试 |
+| pytest 全红 | 提示词太笼统 | 拆小任务，或在 task 里点名"先写 models 再写 store" |
+| `ImportError: No module named xxx` | pytest 跑错目录 | 看输出里的 `[pytest cwd]`；必要时 `--pytest-cwd <项目根>` |
+| 某个文件缺失 | 拆分后没生成 | 单独补派一个 task |
+| 超时 | 任务太大 | 拆小；或 `--timeout 1200` |
+
+---
+
+## 判断要不要派活的算法
+
+```
+派活收益 = (你原本要输出的 token × 1.5)
+         − (派活新增的输入 token × 1 + 新增缓存读取 × 0.1)
+         − (等待时间的隐性成本)
+```
+
+**经验阈值**：
+
+| 产出规模 | 建议 |
+|---|---|
+| < 500 行 | ❌ 自己写 |
+| 500~1500 行 | ⚠️ 看情况，收益不明显 |
+| **> 2000 行 / > 5 个文件** | ✅ **派活**，收益明显 |
+| 批量同构（20 个相似文件） | ✅✅ 强烈推荐 |
+
+---
+
+## 与直接改模型的区别
+
+**不要把 DSH 的模型切换成网页版**。它扛不住完整工具目录（40 个工具的 schema），
+会退化、重复、乱输出。
+
+正确姿势就是本 skill：**DSH 保持 API，只把"生成"这一步外包出去**。

@@ -4,6 +4,9 @@
 
 > **API 指挥，网页版干活。**
 
+[![CI](https://github.com/tryhtryr/web-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/tryhtryr/web-worker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **简体中文** | [English](README.en.md)
 
 ---

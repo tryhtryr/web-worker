@@ -4,6 +4,9 @@ Turn the **DeepSeek web chat** into programmable free labour, so **DeepSeek Harn
 
 > **The API commands. The web chat does the work.**
 
+[![CI](https://github.com/tryhtryr/web-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/tryhtryr/web-worker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 [简体中文](README.md) | **English**
 
 ---

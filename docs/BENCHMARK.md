@@ -28,43 +28,24 @@ taskman/
 
 ---
 
-## 第一轮：v1（规格写进提示词）
+## 对照组：规格写进提示词（已淘汰）
 
-| 指标 | A 自己写 | B 派活 v1 | 变化 |
-|---|---|---|---|
-| 输出 token | 15,969 | 9,984 | −37.5% |
-| 输入 token | 4,221 | 5,472 | +29.6% |
-| 缓存读取 | 425,472 | 674,048 | +58.4% |
-| 步数 | 15 | 16 | +1 |
-| LLM 耗时 | 71.8 s | 56.5 s | −21.4% |
-| 墙钟耗时 | 52 s | 339 s | **+552%** |
-| 代码行数 | 888 / 9 文件 | 732 / 9 文件 | −17.6% |
-| 首次测试通过 | 46/46 | 45/46 | −2.2 pt |
+| 指标 | A 自己写 | B v1 |
+|---|---|---|
+| 输出 token | 15,969 | 9,984 |
+| 输入 token | 4,221 | 5,472 |
+| 缓存读取 | 425,472 | 674,048 |
+| 加权成本 | 1.00× | **1.24×（更贵）** |
 
-**加权成本（输入 1×、缓存读 0.1×、输出 1.5×）：B 反而贵 24%。**
+原因：提示词本身 430 行，写进上下文后每一步都要重读。
+详见 `docs/HOW_IT_WORKS.md` 第七节。
 
-### 失败原因
+## 当前方案：规格从磁盘读
 
-1. **自包含提示词太贵**：3 个提示词文件共约 430 行，而交付物才 700 行
-2. **提示词会永久留在上下文**：每写一个提示词，之后每一步都要重读它
-3. 缓存读取涨了 58%，把省下的输出 token 全吃了
-
-### 质量差异
-
-- 网页版有 1 个测试失败：`store.path == os.path.join(...)` 在 Windows 上因 `expanduser` 保留 `/` 而失败
-- 漏了规格里的 `README.md`（需补写）
-- `stats` 少了两个小标题、id 列左对齐（观感差异）
-
-功能、退出码、CLI 冒烟输出与 A 组一致。
-
----
-
-## 第二轮：v2（规格从磁盘读）
-
-同样的项目，改用 v2 流程：
+同样的项目，改用当前流程：
 
 ```bash
-python ask_web.py --spec spec.md --task-file tasks.txt --out-dir out --pytest
+python skill/ask_web.py --spec spec.md --task-file tasks.txt --out-dir out --pytest
 ```
 
 4 个任务串行派活。
@@ -145,16 +126,8 @@ scripts\start_bridge.bat
 python skill/ask_web.py --spec spec.md --task-file tasks.txt --out-dir out --pytest
 
 # 5. 记录你（调用方）的 token 消耗
-#    DSH 用户：python C:\fw\tokstat.py --delta
+#    DSH 用户：自行统计本会话的 token 增量
 ```
 
 ---
 
-## 测试环境
-
-- Windows 11 build 26200
-- DeepSeek Harness（API 模型 `deepseek-flash`）
-- Edge 156（浏览器自动化）
-- Python 3.12.14
-- pytest 9.2.0
-- 测试日期：2026-10-31

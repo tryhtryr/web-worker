@@ -17,24 +17,13 @@ tags: [token节约, 网页版, 委派, 批量生成, deepseek]
 
 ---
 
-## ⚠️ 先看实测数据（v1 曾经失败）
+## 设计取舍（一句话）
 
-用同一个项目（5 文件 700 行）做过 A/B 对比：
+naive 做法（把规格写进提示词）实测**反而贵 24%** —— 规格会常驻上下文，
+之后每一步都要重读。本技能的做法是：**规格从磁盘读、产物写回磁盘，
+两者都不进入调用方上下文**。
 
-| 指标 | A 自己写 | B 派活（v1 写法） | 变化 |
-|---|---|---|---|
-| 输出 token | 15,969 | 9,984 | −37.5% |
-| 输入 token | 4,221 | 5,472 | **+29.6%** |
-| 缓存读取 | 425,472 | 674,048 | **+58.4%** |
-| 加权成本 | 1.00× | **1.24×** | **反而更贵** |
-| 墙钟耗时 | 52 s | 339 s | +552% |
-
-**失败原因**：v1 要求把规格**写进提示词**（430 行），规格从此常驻上下文，
-之后每一步都要重读它 → 省下的 6k 输出 token 全被 250k 缓存读取吃掉了。
-
-**v2 的修法**：规格从磁盘读、产物写回磁盘，**两者都不进上下文**，只回一行摘要。
-
----
+详细数据见 `docs/BENCHMARK.md`。
 
 ## 什么时候用（硬门槛）
 
@@ -59,7 +48,7 @@ tags: [token节约, 网页版, 委派, 批量生成, deepseek]
 ```bash
 # 桥接服务
 curl -s http://127.0.0.1:8787/health     # 应返回 {"ok":true}
-C:\fw\DSH-启动桥接.bat                    # 没运行就启动
+scripts/start_bridge.bat                    # 没运行就启动
 ```
 
 Edge 需已登录 DeepSeek（登录态在 `%USERPROFILE%\.eagent_profile`）。
@@ -69,7 +58,7 @@ Edge 需已登录 DeepSeek（登录态在 `%USERPROFILE%\.eagent_profile`）。
 ## 标准用法（一条命令搞定）
 
 ```bash
-python D:\web-worker\ask_web.py \
+python skill/ask_web.py \
   --spec C:\path\spec.md \
   --task "实现 models.py 和 test_models.py" \
   --out-dir C:\path\out \

@@ -4,6 +4,8 @@
 
 > **API 指挥，网页版干活。**
 
+**简体中文** | [English](README.en.md)
+
 ---
 
 ## 这是什么
@@ -115,6 +117,7 @@ python skill/ask_web.py \
 ```
 web-worker/
 ├── README.md
+├── README.en.md
 ├── LICENSE
 ├── requirements.txt
 ├── .gitignore

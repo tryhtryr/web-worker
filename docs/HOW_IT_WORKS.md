@@ -1,6 +1,6 @@
-# 原理详解
+# 实现要点
 
-实现过程中的关键技术细节与踩坑记录。
+桥接与技能的关键实现约束。每条都是踩过坑之后确定的，改动前请先看清楚原因。
 
 ---
 
@@ -13,49 +13,32 @@
 └─────────────┘   JSON / SSE   └──────────────┘  注入 JS   └──────────────┘
 ```
 
-桥接做三件事：
-1. 启动/连接一个带调试端口的浏览器
-2. 把 OpenAI 消息转成一条文本发进网页输入框
-3. 从**网络响应**里取回原始文本，转回 OpenAI 格式
+桥接做三件事：启动/连接浏览器 → 把 OpenAI 消息转成文本发进输入框 → 从网络响应取回原文转回 OpenAI 格式。
 
 ---
 
-## 二、CDP 层（cdp.py）
+## 二、CDP 层约束（cdp.py）
 
-### 坑 1：同步读取会丢失事件
+### 必须用后台读线程
 
-最初 `call()` 是"发请求 → 循环 recv 直到拿到匹配的 id"，**期间收到的所有事件消息都被丢掉了**。
+CDP 的 WebSocket 会同时推送"响应"和"事件"。同步读取时事件会被直接丢掉。
+`CDP` 用一个后台线程分发：
 
-后来要监听网络事件，必须改成**后台读线程**：
+- 有 `id` 且匹配 pending → 唤醒调用方
+- 其余 → 进 `events` 队列，供 `wait_event()` 扫描
 
-```python
-def _read_loop(self):
-    while self._alive:
-        raw = self.ws.recv()
-        data = json.loads(raw)
-        if data.get("id") in self._pending:      # 响应 → 唤醒调用方
-            slot = self._pending.pop(data["id"])
-            slot["result"] = data
-            slot["done"].set()
-        else:                                     # 事件 → 进缓冲队列
-            self.events.append(data)
-```
+### 会话会失效
 
-这样 `call()` 只负责等待，事件进 `events` 队列供 `wait_event()` 扫描。
-
-### 坑 2：页面导航后会失效
-
-CDP 会话绑定的是**具体页面**。页面被导航/重载后，旧的 WebSocket 可能还在，但拿不到新页面的数据。
-
-**对策**：桥接层加了失败重连 —— 请求异常时重置 `_cdp`，重新 `wait_page()` 再试一次。
+CDP 绑定具体页面，页面导航或关闭后旧连接不可用。
+`bridge._complete()` 在异常时重置 `_cdp` 并重连一次。
 
 ---
 
-## 三、页面交互（deepseek_web.py）
+## 三、页面注入约束（deepseek_web.py）
 
-### 坑 3：React 控件的赋值
+### 赋值必须用原生 setter
 
-直接 `el.value = text` 不会触发 React 的 onChange。必须用**原生 setter**：
+直接 `el.value = text` 不会触发 React 的 onChange：
 
 ```js
 const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
@@ -63,83 +46,41 @@ setter.call(el, text);
 el.dispatchEvent(new Event('input', {bubbles: true}));
 ```
 
-### 坑 4：点错了发送按钮 ⭐
+### 发送按钮必须按 class 定位
 
-最初用"任何带 svg 图标的按钮"定位发送键：
-
-```js
-btns.find(b => b.querySelector('svg'))     // ❌ 匹配到第一个按钮
-```
-
-实测页面有 5 个按钮，第一个在**顶部工具栏**（x=63,y=15），真正的发送键在**输入框右侧**（x=738,y=456）。
-
-结果就是：消息填进去了，但点的是"新对话"之类的按钮 → 页面重置 → 消息消失。
-
-**正确做法**：按 class 精确匹配
+页面上有多个带图标的按钮，按"有没有 svg"匹配会点中顶部工具栏。
 
 ```js
 btns.find(b => /ds-button--primary/.test(b.className) &&
                /circle/.test(b.className))
 ```
 
-DeepSeek 的发送键特征是 `ds-button--primary` + `ds-button--circle`（圆形主按钮）。
+### 提交后必须校验
 
-### 坑 5：大文本提交时机
+React 更新状态需要时间。填完等 **0.6 秒**再点，点完检查**输入框是否被清空**，
+没清空就重试（最多 3 次，补发 Enter）。
 
-填完内容后 React 需要时间更新状态，发送按钮才会从 disabled 变可用。
-`sleep(0.35)` 不够，改成 **0.6 秒 + 提交后校验**：
+### 新对话后必须等输入框
 
-```python
-for attempt in range(3):
-    cdp.eval(_js_submit())
-    for _ in range(12):                  # 最多等 3 秒
-        time.sleep(0.25)
-        if cdp.eval(_js_len()) == 0:     # 输入框被清空 = 发出去了
-            return ok
-    # 没发出去 → 补按 Enter
-```
-
-### 坑 6：新对话后页面没加载完
-
-`Page.navigate` 之后 `sleep(3)` 不够，输入框还没渲染出来，`send_message` 直接失败。
-
-**对策**：轮询等待输入框出现（最多 25 秒）。
+`Page.navigate` 后页面需要时间渲染。轮询 `probe()` 直到出现输入框（最多 25 秒）再发送。
 
 ---
 
-## 四、抓回复：DOM vs 网络 ⭐⭐
+## 四、必须抓网络响应，不能抓 DOM
 
-### 最初的做法：轮询 DOM
-
-```js
-document.querySelectorAll('.ds-markdown')  // 取最后一个的 innerText
-```
-
-**致命缺陷**：网页把内容渲染成富文本后再取 `innerText`，过程中：
+网页把内容渲染成富文本后再取 `innerText` 会破坏代码：
 
 | 现象 | 例子 |
 |---|---|
-| `(...)` 被当 LaTeX 公式 | `[math]::Round` → `[𝑚𝑎𝑡ℎ]::𝑅𝑜𝑢𝑛𝑑` |
+| 括号被当 LaTeX | `[math]::Round` → 数学斜体字符 |
 | 空格丢失 | `Select-Object -First 200` → `Select-Object-First200` |
-| 内容重复 | `$z=[...]::OpenRead($p)` 出现两次 |
-| 换行错乱 | 每个字符一行 |
+| 内容重复、换行错乱 | 文件被写出两遍 |
 
-**这会导致生成的 PowerShell/代码完全无法执行。**
-
-### 正确的做法：抓网络响应
-
-DeepSeek 网页请求的接口是：
-
-```
-POST https://chat.deepseek.com/api/v0/chat/completion
-```
-
-用 CDP 的 `Network` 域捕获它：
+**正确做法**：用 CDP 的 `Network` 域抓 `/api/v0/chat/completion` 的原始响应。
 
 ```python
-cdp.call("Network.enable")
-cdp.clear_events()
-# ...发送消息...
+cdp.call("Network.enable"); cdp.clear_events()
+# 发送...
 ev = cdp.take_event("Network.requestWillBeSent",
                     lambda p: "/api/v0/chat/completion" in p["request"]["url"])
 rid = ev["requestId"]
@@ -147,207 +88,112 @@ cdp.wait_event("Network.loadingFinished", lambda p: p["requestId"] == rid)
 body = cdp.call("Network.getResponseBody", {"requestId": rid})["body"]
 ```
 
-拿到的是**原始 SSE 文本**，没有任何渲染加工。
-
-### SSE 格式（实测）
+### SSE 格式
 
 ```
-event: ready
-data: {"request_message_id":3,"response_message_id":4,"model_type":"default"}
-
-data: {"v":{"response":{...,"fragments":[
-        {"id":2,"type":"THINK","content":"我们需要",...}]}}}
-
+data: {"v":{"response":{...,"fragments":[{"id":2,"type":"THINK","content":"..."}]}}}
 data: {"p":"response/fragments/-1/content","o":"APPEND","v":"回答"}
-data: {"v":"用户"}                                    ← 无路径 = 续写最后一个片段
-data: {"p":"response/fragments/-1/elapsed_secs","o":"SET","v":0.556}
-
-data: {"p":"response/fragments","o":"APPEND","v":[
-        {"id":3,"type":"RESPONSE","content":"9",...}]}  ← 答案在这里
-
+data: {"v":"用户"}                                        ← 无路径 = 续写最后一个片段
+data: {"p":"response/fragments","o":"APPEND","v":[{"id":3,"type":"RESPONSE","content":"9"}]}
 data: {"p":"response/status","o":"SET","v":"FINISHED"}
 ```
 
-### 坑 7：思考内容混进答案 ⭐
+### 只取 RESPONSE 片段
 
-**开启深度思考时，`fragments` 里会有两种类型**：
-
-| type | 含义 |
-|---|---|
-| `THINK` | 模型的思考过程 |
-| `RESPONSE` | 最终答案 |
-
-最初的解析器把所有片段拼在一起，结果拿到的是思考过程（"需要只回答数字。应输出 2..."）而不是答案。
-
-**正确做法**：按片段维护列表，最后只取 `type == "RESPONSE"` 的。
-
-```python
-frags = []                          # [{"type":..., "content":...}]
-# 初始快照 → 填充；p=="response/fragments" → 新增；
-# p=="response/fragments/N/content" → 追加到第 N 个（-1 = 最后一个）
-# 无 p 的 {"v": "..."} → 追加到最后一个
-return "".join(f["content"] for f in frags if f["type"] == "RESPONSE")
-```
+开启深度思考时 `fragments` 有两种 type：`THINK`（思考过程）和 `RESPONSE`（最终答案）。
+解析时**只拼接 RESPONSE**，否则拿到的是思考过程而不是答案。
 
 ---
 
-## 四之二、输出上限与截断检测
+## 五、输出上限与截断
 
-### 网页版的单轮上限
-
-实测（2026-11-01）：
+### 实测上限 ≈ 54,000 字符（约 1,500 行代码）
 
 | 测试 | 结果 |
 |---|---|
-| 要求 20,000 行数字 | 截断于 **10,814 行 / 53,777 字符**，`finish_reason=length` |
-| 700 个函数 / 704 行 / 31,248 字符 | 完整返回 |
-| 300 个函数 / 335 行 / 17,596 字符 | 完整返回 |
+| 20,000 行数字 | 截断于 10,814 行 / 53,777 字符 |
+| 700 个函数（31,248 字符） | 完整返回 |
 
-**上限约 54,000 字符**，折合代码约 **1,500 行**。
+### 截断信号
 
-超过会**静默截断** —— 响应看起来正常结束，但内容只写了一半。
+SSE 的 `response/status` 正常是 `FINISHED`，截断时不是。
+`extract_sse_meta()` 解析出 `incomplete`，桥接映射为标准的 **`finish_reason: "length"`**。
 
-### SSE 里的状态字段
+### 模型会自我压缩
 
-```json
-{"p":"response","o":"BATCH","v":[
-    {"p":"accumulated_token_usage","v":4820},
-    {"p":"quasi_status","v":"FINISHED"}]}
+要求大量重复内容时，模型会抽象成循环（实测要 2000 个函数，只给了 14 行）。
+需要逐个展开时，提示词里要明确禁止循环 / `globals()` / 工厂函数。
 
-{"p":"response/status","o":"SET","v":"FINISHED"}
-```
+---
 
-正常情况下 `status` 是 `FINISHED`；初始快照里还有 `incomplete_message` 字段。
-
-`extract_sse_meta()` 会解析这些字段：
-
-```python
-{"status": "FINISHED", "incomplete": False, "tokens": 4820, "thinking": False}
-```
-
-### 映射成 OpenAI 标准信号
-
-截断时桥接返回 **`finish_reason: "length"`**（OpenAI 的标准约定）：
-
-```python
-"finish_reason": ("length" if meta.get("incomplete")
-                  else ("tool_calls" if tool_calls else "stop"))
-```
-
-`ask_web.py` 检测到这个值就会警告调用方拆小任务。
-
-### 深度思考的处理
-
-开启"深度思考"时，SSE 的 `fragments` 会有两种 type：
-
-```json
-{"id":2,"type":"THINK","content":"我们需要"}      // 思考
-{"id":3,"type":"RESPONSE","content":"9"}          // 答案
-```
-
-解析器**只取 RESPONSE**，思考内容直接丢弃。
-`thinking_enabled` 字段可以判断本次是否开了思考（用于分析延迟原因）。
-
-## 五、工具调用转换
+## 六、工具调用转换
 
 ### OpenAI tools → 提示词
 
-网页版没有原生 function calling，所以要把工具定义"翻译"成文字：
+网页版没有原生 function calling，把工具定义渲染成文字：
 
 ```
 - pwsh(command, description, timeoutMs) // 执行 PowerShell 命令
-- read(file_path, offset, limit)        // 读取文件
 ```
 
-### 回复 → tool_calls
+### 回复 → tool_calls（DSML）
 
-模型会用 **DSML**（DeepSeek 原生的工具调用标记）：
+模型用 DeepSeek 原生标记：
 
 ```
 <||DSML||calls>
 <||DSML||invoke name="pwsh">
-<||DSML||parameter name="command" string="true">Get-Item ...</||DSML||parameter>
+<||DSML||parameter name="command" string="true">...</||DSML||parameter>
 </||DSML||invoke>
 </||DSML||calls>
 ```
 
-### 坑 8：竖线是全角的 ⭐
+**两个必须注意的点**：
 
-模型输出的竖线是 **U+FF5C（全角 ｜）**，不是半角 `|`（U+007C）：
-
-```
-<\uff5c\uff5cDSML\uff5c\uff5c calls>
-```
-
-正则必须两种都接受：
+1. 竖线是**全角** `｜`（U+FF5C），正则要同时接受 `|` 和 `｜`
+2. 闭合标签是 `</||DSML||calls>`，斜杠在 `<` 后面
 
 ```python
-_VB = r"[|\uff5c\u2502]"      # 半角 / 全角 / 制表符
-_OPEN  = r"<" + _VB + "{2,}\s*DSML\s*" + _VB + "{2,}\s*"
-_CLOSE = r"</" + _VB + "{2,}\s*DSML\s*" + _VB + "{2,}\s*"
-```
-
-### 坑 9：闭合标签的斜杠位置
-
-闭合标签是 `</||DSML||calls>`（斜杠在 `<` 后面），不是 `<||DSML||/calls>`。
-
-```python
-_CLOSE = r"</" + _VB + "{2,}..."      # ✅
-# 不是 _OPEN + r"/calls>"             # ❌
+_VB = r"[|\uff5c\u2502]"
+_OPEN  = r"<" + _VB + r"{2,}\s*DSML\s*" + _VB + r"{2,}\s*"
+_CLOSE = r"</" + _VB + r"{2,}\s*DSML\s*" + _VB + r"{2,}\s*"
 ```
 
 ---
 
-## 六、会话管理
+## 七、会话管理
 
-网页版自己维护上下文，所以不能每次都把完整历史发过去。
-
-**用指纹判断**：
+网页版自己维护上下文，不能每次都发完整历史。用指纹判断：
 
 ```python
 def session_signature(messages):
-    # system + 第一条 user 的前 800 字符
-    return uuid5(system_text + first_user_text)
+    return uuid5(system_text + first_user_text)   # 各取前 800 字符
 ```
 
-- 指纹变了 → 导航到 `chat.deepseek.com` 开新对话，发**完整历史**
-- 指纹没变 → 只发**最后一条**（通常是 tool 结果）
+- 指纹变 → 导航到 `chat.deepseek.com` 开新对话，发**完整历史**
+- 指纹不变 → 只发**最后一条**（通常是 tool 结果）
 
 ---
 
-## 七、技能层设计（让 token 真的省下来）
+## 八、技能层：让 token 真正省下来
 
-### 坑 10：v1 把规格写进提示词，反而更贵 ⭐⭐
+### 核心约束：规格和产物都不能进入调用方上下文
 
-v1 的做法是让 DSH 把规格内容**写进提示词文件**。
-
-实测结果：
-
-| 指标 | A 自己写 | B 派活 v1 | 变化 |
-|---|---|---|---|
-| 输出 token | 15,969 | 9,984 | −37.5% |
-| 输入 token | 4,221 | 5,472 | **+29.6%** |
-| 缓存读取 | 425,472 | 674,048 | **+58.4%** |
-| 加权成本 | 1.00× | **1.24×** | **反而更贵** |
-
-**原因**：写进提示词的 430 行规格会**永久留在上下文里**，之后每一步都要重读它。
-省下的 6k 输出被 250k 缓存读取吃光了。
-
-### v2 的修法
-
-| v1 | v2 |
+| 做法 | 后果 |
 |---|---|
-| 规格写进提示词 | **`--spec` 从磁盘读，不进上下文** |
-| 产物要自己看 | **`--out-dir` 自动落盘** |
-| 测试输出全读 | **`--pytest` 只回一行摘要** |
-| 每轮 3~4 步 | **每轮 1 步** |
+| 规格写进提示词 | 规格常驻上下文，之后每步都要重读（实测反而贵 24%） |
+| 结果读进上下文 | 省下的输出 token 全还回去 |
 
-结果：**输出 token 2,610（降 84%），产出 1,413 行、117 个测试全通过。**
+**正确做法**：`--spec` 从磁盘读，`--out-dir` 写回磁盘，`--pytest` 只回一行摘要。
+
+### 阈值
+
+**产出量 ≥ 说明量的 5 倍** 才值得派活，且必须有自动验收手段。
+500~700 行以下的小项目不划算。
 
 ---
 
-## 八、一句话总结
+## 九、一句话总结
 
-> 网页版**能扛生成**，但**扛不住 Agent 协议**。
-> 所以别把 DSH 的模型换成它，而是**把它当成一个"写代码的工人"**来调用 ——
-> API 负责想，网页版负责写，脚本负责搬运。
+> 网页版能扛生成，扛不住 Agent 协议。
+> 把它当"写代码的工人"调用，而不是当模型替换。
